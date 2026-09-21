@@ -1,0 +1,26 @@
+# Datasets, generated results, and model checkpoints
+/eval/real_datasets/
+/eval/fake_datasets/
+/results/
+**/ckpt/
+*.pth
+*.pt
+*.pkl
+*.npy
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Local secrets and operating-system files
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
