@@ -1,0 +1,63 @@
+"""TabDAT methods extracted without changing their implementation."""
+
+import os
+import torch
+
+
+class CheckpointMixin:
+    def save(self, path):
+        """
+        Saves the model state, configuration, and scalers to a file.
+        """
+        checkpoint = {
+            "model_state_dict": self.state_dict(),
+            "config": {
+                "file_path": self.file_path,
+                "embed_dim": self.embed_dim,
+                "num_heads": self.num_heads,
+                "num_layers": self.num_layers,
+                "cat_cols": self.cat_cols,
+                "log_cols": self.log_cols,
+                "dropout": self.dropout,
+                "cont_scaler": self.cont_scaler,
+                "col_names": self.col_names,  # Save column names
+            },
+            "scalers": self.scalers,  # Save sklearn scalers (pickle)
+        }
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(checkpoint, path)
+        print(f"Model saved to {path}")
+
+    @classmethod
+    def load(cls, path, device="cuda"):
+        """
+        Loads a model from a file.
+        """
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+        config = checkpoint["config"]
+
+        # Re-instantiate the model using the saved configuration
+        model = cls(
+            embed_dim=config["embed_dim"],
+            num_heads=config["num_heads"],
+            num_layers=config["num_layers"],
+            cat_cols=config["cat_cols"],
+            log_cols=config["log_cols"],
+            dropout=config["dropout"],
+            cont_scaler=config["cont_scaler"],
+            device=device,
+            file_path=config["file_path"],
+        )
+
+        # Load weights
+        model.load_state_dict(checkpoint["model_state_dict"])
+
+        # Load scalers and column names
+        model.scalers = checkpoint["scalers"]
+        model.col_names = config["col_names"]
+
+        model.to(device)
+        model.eval()
+        print(f"Model loaded from {path}")
+        return model
+
