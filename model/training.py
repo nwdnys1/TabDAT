@@ -26,7 +26,7 @@ class TrainingMixin:
         batch_size=1024,
         lr=1e-3,
         mask_prob=0.15,
-        test_split_ratio=0.2,
+        test_split_ratio=0.0,
         sample=None,
         lr_decay_gamma=0.999,
         dp=False,
@@ -47,7 +47,9 @@ class TrainingMixin:
             batch_size (int): Batch size for training.
             lr (float): Learning rate for the optimizer.
             mask_prob (float): Mask probability for bernoulli_all only.
-            test_split_ratio (float): The ratio of the dataset to be used for testing.
+            test_split_ratio (float): Deprecated for ordinary training. Must be 0;
+                split raw data before constructing the model so preprocessors see
+                training rows only. Legacy DP uses its separate training path.
             lr_decay_gamma (float): Gamma for exponential learning rate decay.
             dp (bool): Whether to enable differential privacy.
             dp_epsilon (float): Epsilon parameter for differential privacy.
@@ -90,13 +92,12 @@ class TrainingMixin:
                     "Training data not found. Please provide data to the `fit` method or specify `file_path` during model initialization."
                 )
 
-        # --- Dataset Splitting ---
-        dataset_size = len(data)
-        test_size = int(test_split_ratio * dataset_size)
-        train_size = dataset_size - test_size
-        train_dataset, test_dataset = torch.utils.data.random_split(
-            data, [train_size, test_size]
-        )
+        if test_split_ratio != 0:
+            raise ValueError(
+                "fit() cannot safely create a holdout after preprocessing. "
+                "Split the raw CSV first and construct TabDAT from the training CSV."
+            )
+        train_dataset = data
 
         device = self.device
         self.to(device)
@@ -118,7 +119,7 @@ class TrainingMixin:
 
         print("--- Starting Training ---")
         print(f"Training set size: {len(train_dataset)}")
-        print(f"Test set size: {len(test_dataset)}")
+        print("Validation and test rows must be held out before model construction")
 
         for epoch in range(epochs):
 
@@ -179,7 +180,7 @@ class TrainingMixin:
                 )
 
             if sample and (epoch + 1) % sample == 0:
-                self.sample(self.data.shape[0], device=device)
+                self.sample(len(train_dataset), device=device)
 
         print("--- Training Finished ---")
 

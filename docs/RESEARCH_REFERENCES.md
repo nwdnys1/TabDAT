@@ -21,6 +21,22 @@ MAC 的规范次序是全局列排列，不必是 DAG 的拓扑序。对子集 `
 | [TabMT：*Generating tabular data with masked transformers*](https://proceedings.neurips.cc/paper_files/paper/2023/hash/90debc7cedb5cac83145fc8d18378dc5-Abstract-Conference.html) | 掩码式 Transformer 生成、缺失字段处理及不同规模表格的评估。 | 掩码训练与缺失列填补的相关基线；具体训练／采样协议须逐项核对，不能笼统归为 TabDAT 的顺序对照。 |
 | [TabDDPM：*Modelling Tabular Data with Diffusion Models*](https://proceedings.mlr.press/v202/kotelnikov23a.html) | 在异构表格数据上使用扩散生成。 | 作为 diffusion 类整体表格生成基线；不同于 TabDAT 的“Transformer 条件向量 + 单连续列输出头”，不能只比较损失数值。 |
 
+## 原论文基线的 checkpoint 与生成器预处理核查
+
+此处的“预处理”指**生成器输入**，不是下游效用模型或统计指标的特征缩放；“调超参数”也不是“从同一次训练中挑 epoch”。论文没写清的细节以官方代码辅助核查；本仓库的 `baselines/` 有适配改动，不能自动当作论文原始协议。
+
+| 方法 | checkpoint 选择：可确认的证据 | 生成器输入：可确认的证据 |
+| --- | --- | --- |
+| CTGAN / TVAE | [官方 CTGAN](https://github.com/sdv-dev/CTGAN/blob/main/ctgan/synthesizers/ctgan.py) 与 [TVAE](https://github.com/sdv-dev/CTGAN/blob/main/ctgan/synthesizers/tvae.py) 的 `fit` 按设定 epoch 训练，未见验证集选 epoch；随后使用当前参数。 | [官方 DataTransformer](https://github.com/sdv-dev/CTGAN/blob/main/ctgan/data_transformer.py) 对连续列用 Bayesian GMM / mode-specific normalization，对分类列 one-hot；不是整表 MinMax/Standard。 |
+| CTAB-GAN+ | [官方训练代码](https://github.com/Team-TUD/CTAB-GAN-Plus/blob/main/model/synthesizer/ctabgan_synthesizer.py) 固定轮数后以当前生成器采样，未见验证集选 epoch。 | [官方 transformer](https://github.com/Team-TUD/CTAB-GAN-Plus/blob/main/model/synthesizer/transformer.py) 一般连续列用 GMM 分量内缩放和分量 one-hot；`general_columns` 则映到 [-1,1]，混合列有单独分支。 |
+| TabDDPM | [论文](https://proceedings.mlr.press/v202/kotelnikov23a/kotelnikov23a.pdf) 用保留验证集上的 CatBoost 效用调**超参数**；[官方训练](https://github.com/yandex-research/tab-ddpm/blob/main/scripts/train.py) 在训练结束保存 `model.pt`/EMA，[默认采样管道](https://github.com/yandex-research/tab-ddpm/blob/main/scripts/pipeline.py) 读取最终 `model.pt`，非验证最优 epoch。 | [论文](https://proceedings.mlr.press/v202/kotelnikov23a/kotelnikov23a.pdf) 明确数值列 Gaussian quantile transformation，分类列 one-hot；[示例训练配置](https://github.com/yandex-research/tab-ddpm/blob/main/exp/churn2/config.toml) 的 `normalization=quantile` 与评估配置不同。 |
+| TabSyn | [官方 VAE](https://github.com/amazon-science/tabsyn/blob/main/tabsyn/vae/main.py) 用名为 `X_test` 的留出数组上的**分类重建 CE** 存最优 VAE；但训练结束导出潜变量时从内存中的最终模型导出，未重新载入该最优 VAE。[官方 diffusion](https://github.com/amazon-science/tabsyn/blob/main/tabsyn/main.py) 按最小**训练损失**覆盖保存 `model.pt`，[采样](https://github.com/amazon-science/tabsyn/blob/main/tabsyn/sample.py) 加载该文件。 | [官方预处理](https://github.com/amazon-science/tabsyn/blob/main/utils_train.py) 数值列用 quantile；第二阶段将潜变量逐维中心化后除以 2（不是除以标准差）。 |
+| TabNAT | [官方训练](https://github.com/fangliancheng/TabNAT/blob/main/tabnat/main.py) 记录最佳训练损失，但只定期存档及在结束时保存默认 `model.pt`；未见按 `best_loss` 保存最优 epoch。 | [官方预处理](https://github.com/fangliancheng/TabNAT/blob/main/utils_train.py) 数值列用 quantile，主训练入口还做 `(x-mean)/std/2`。 |
+| TabMT | [论文](https://papers.nips.cc/paper_files/paper/2023/file/90debc7cedb5cac83145fc8d18378dc5-Paper-Conference.pdf) 给出训练预算、超参数搜索及结果用的验证集，但未明确描述生成器 epoch 选择；本仓库实现记录训练 `best_loss`，却未据此保存，直接用最终参数采样。 | 论文默认先以 K-Means 量化连续列，再对**聚类中心比例**做 min-max 以构造有序 embedding；这不等于将原始连续数据简单 MinMax。**本仓库适配版不同**：先 quantile，再用 uniform `KBinsDiscretizer` 分箱。 |
+| TTVAE | [官方代码](https://github.com/coksvictoria/TTVAE/blob/main/ttvae/model.py) 按训练损失下降保存 `model.pt`，但比较的是 epoch 均损失、更新 `best_loss` 时却用了最后一个 batch 的损失；因此不能笼统称为可靠的最优训练损失选择。本仓库采样入口会加载该文件。 | [官方 DataTransformer](https://github.com/coksvictoria/TTVAE/blob/main/ttvae/util.py) 与 CTGAN 类似：连续列 GMM 分量归一化加 one-hot，离散列 one-hot。 |
+
+实验含义：不能仅因其它方法默认 `final` 就强迫 TabDAT 使用 `final`，也不能让 TabDAT 从测试集合成指标挑 epoch、而其它方法无同等机会。后续应先固定原始 train/validation/test、预算和候选 checkpoint，生成器预处理仅在训练集拟合；分别报告“官方／复现默认协议”与“统一验证规则”两个比较口径，并公开每个模型的实际采用文件与 epoch。本仓库 `baselines/models/tabddpm/train.py` 会在循环内按训练损失暂存 `model.pt`，但在结束时以最终参数覆盖；`baselines/models/tabsyn/main.py` 的 diffusion 同样只记录最优训练损失而以当前参数采样。复现实验前需要逐个审计入口，不能只看 `best_loss` 日志。
+
 ## 边界性参考与暂缓方向
 
 | 论文（原文） | 可借鉴的内容 | 对 TabDAT 的用途与边界 |

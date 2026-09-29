@@ -1,12 +1,13 @@
 from evaluation import (
     get_utility_metrics,
     stat_sim,
-    privacy_metrics,
-    get_adr_metric,
-    get_eps_metric,
-    get_mia_metric,
-    get_hit_metric,
-    get_nnaa_metric,
+    # Privacy metrics are paused while the non-DP evaluation protocol is revised.
+    # privacy_metrics,
+    # get_adr_metric,
+    # get_eps_metric,
+    # get_mia_metric,
+    # get_hit_metric,
+    # get_nnaa_metric,
     get_extra_metrics
 )
 import numpy as np
@@ -80,7 +81,7 @@ tar_cols = {
 
 def eval_ss(dataset):
     stat_res_avg = []
-    stat_columns = ["Dataset", "Average WD", "Average JSD", "Correlation Distance"]
+    stat_columns = ["Dataset", "Average WD", "Average JS Distance", "Mean Association Error"]
 
     for fake_path in fake_paths:
         print(f"  Evaluating fake dataset: {fake_path}")
@@ -98,10 +99,10 @@ def eval_ml(dataset):
 
     if problem_type == "Classification":
         model_dict = {"Classification": ["lr", "dt", "rf", "mlp", "svm"]}
-        metric_names = ["Acc", "AUC", "F1_Score"]
+        metric_names = ["Acc", "AUC", "F1_macro"]
     else:
         model_dict = {"Regression": ["l_reg", "ridge","lasso" ,"B_ridge"]}
-        metric_names = ["MSE", "EVS", "R2"]
+        metric_names = ["MAPE", "EVS", "R2"]
 
     ml_res_avg = []
     models = list(model_dict.values())[0]
@@ -118,13 +119,13 @@ def eval_ml(dataset):
 
     for fake_path_single in fake_paths:
         real_results, fake_results = get_utility_metrics(
-            real_path,
+            real_train_path,
             [fake_path_single],
             "MinMax",
             model_dict,
-            test_ratio=0.20,
             cat_cols=cat_cols.get(dataset, []),
             target_col=tar_cols.get(dataset, None),
+            real_test_path=real_path,
         )
 
         row = [fake_path_single]
@@ -232,12 +233,20 @@ if __name__ == "__main__":
         "covertype",
         "pm25"
     ]:
-        suffix = "random_order"
+        suffix = "holdout_v1"
 
         cur_dir = os.path.dirname(os.path.abspath(__file__))
-        real_path = f"{cur_dir}/real_datasets/{dataset}.csv"
+        split_dir = f"{cur_dir}/real_datasets/{dataset}"
+        real_train_path = f"{split_dir}/train.csv"
+        real_path = f"{split_dir}/test.csv"
+        if not os.path.isfile(real_train_path) or not os.path.isfile(real_path):
+            raise FileNotFoundError(
+                f"Missing train/test split in {split_dir}; prepare it before evaluating"
+            )
         fake_path = f"{cur_dir}/fake_datasets/{dataset}/{suffix}"
-        fake_paths = glob.glob(f"{fake_path}/*.csv")
+        fake_paths = sorted(glob.glob(f"{fake_path}/*.csv"))
+        if not fake_paths:
+            raise FileNotFoundError(f"No generated CSVs found in {fake_path}")
 
         print(f"Evaluating dataset: {dataset}")
         eval_ss(dataset)

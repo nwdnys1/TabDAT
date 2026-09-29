@@ -1,7 +1,13 @@
 import torch
-import pandas as pd
 import os
-from model import TabDAT
+from pathlib import Path
+
+if __package__:
+    from .model import TabDAT
+    from .data_splits import prepare_data_splits
+else:
+    from model import TabDAT
+    from data_splits import prepare_data_splits
 
 
 def train(dataset):
@@ -16,9 +22,29 @@ def train(dataset):
         "covertype": [i for i in range(10, 55)],
         "pm25": [0, 1, 2, 3, 8, 10, 11],
     }
+    if dataset not in cat_cols:
+        raise ValueError(
+            "This example supports only the original benchmarks; datasets with "
+            "official, temporal, or grouped splits need a separate protocol"
+        )
 
-    # 1. Load data to determine properties
-    data_path = f"datasets/{dataset}.csv"
+    # Split raw rows before fitting encoders, scalers, or the generator.
+    target_cols = {
+        "adult": "class",
+        "barley": "rokap",
+        "credit": "Class",
+        "loan": "Personal Loan",
+        "covertype": "Covertype",
+    }
+    split_paths = prepare_data_splits(
+        f"datasets/{dataset}.csv",
+        f"TabDAT/eval/real_datasets/{dataset}",
+        stratify_col=target_cols.get(dataset),
+    )
+    data_path = str(split_paths["train"])
+    checkpoint_path = Path(f"TabDAT/model/ckpt/holdout_v1/{dataset}/model.pth")
+    if checkpoint_path.exists():
+        raise FileExistsError(f"Checkpoint already exists: {checkpoint_path}")
 
     # 2. Model parameters
     embedding_dimension = 64
@@ -58,25 +84,32 @@ def train(dataset):
         dp_micro_batch_size=1,
     )
 
-    model.save(f"TabDAT/model/ckpt/random_order/{dataset}/model.pth")
+    # Keep historical full-data checkpoints untouched.
+    model.save(str(checkpoint_path))
 
 
-def sample(dataset):
+def sample(dataset, n_samples=None):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    model = TabDAT.load(f"TabDAT/model/ckpt/non-dp/{dataset}/model.pth", device=device)
+    model = TabDAT.load(f"TabDAT/model/ckpt/holdout_v1/{dataset}/model.pth", device=device)
+    expected_train = Path(f"TabDAT/eval/real_datasets/{dataset}/train.csv").resolve()
+    if Path(model.file_path).resolve() != expected_train:
+        raise ValueError("Checkpoint was not trained on the recorded training split")
 
     print(f"Number of variables (inferred): {model.num_vars}")
     print(f"Variable types (inferred): {model.var_types}")
 
-    df = model.sample(1000, device=device)
-    os.makedirs(f"TabDAT/eval/fake_datasets/{dataset}/random_order", exist_ok=True)
-    df.to_csv(
-        f"TabDAT/eval/fake_datasets/{dataset}/random_order/sampled_{dataset}_5.csv",
-        index=False,
+    output_path = Path(
+        f"TabDAT/eval/fake_datasets/{dataset}/holdout_v1/sampled_{dataset}_5.csv"
     )
+    if output_path.exists():
+        raise FileExistsError(f"Generated CSV already exists: {output_path}")
+    # Use a synthetic training set of the same size as the real training split.
+    df = model.sample(len(model.data) if n_samples is None else n_samples, device=device)
+    os.makedirs(output_path.parent, exist_ok=True)
+    df.to_csv(output_path, index=False)
 
 
 if __name__ == "__main__":

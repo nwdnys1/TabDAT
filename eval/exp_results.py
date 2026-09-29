@@ -119,10 +119,13 @@ def process_results():
 
             if is_stat:
                 wd = row.get("Average WD")
-                jsd = row.get("Average JSD")
-                corr = row.get("Correlation Distance")
+                jsd = row.get("Average JS Distance", row.get("Average JSD"))
+                if "Mean Association Error" in row:
+                    assoc_key, corr = "Association Error", row["Mean Association Error"]
+                else:
+                    assoc_key, corr = "Corr (legacy Frobenius)", row.get("Correlation Distance")
 
-                for k, v in [("WD", wd), ("JSD", jsd), ("Corr", corr)]:
+                for k, v in [("WD", wd), ("JS Distance", jsd), (assoc_key, corr)]:
                     for d in [target_dict, ds_target]:
                         if k not in d:
                             d[k] = []
@@ -145,8 +148,11 @@ def process_results():
                     metrics = [
                         ("ACC", "avg_Acc_real", "avg_Acc_fake"),
                         ("AUC", "avg_AUC_real", "avg_AUC_fake"),
-                        ("F1", "avg_F1_Score_real", "avg_F1_Score_fake"),
                     ]
+                    if "avg_F1_macro_real" in row:
+                        metrics.append(("F1 macro", "avg_F1_macro_real", "avg_F1_macro_fake"))
+                    else:
+                        metrics.append(("F1 (legacy)", "avg_F1_Score_real", "avg_F1_Score_fake"))
                     for m_name, real_col, fake_col in metrics:
                         if real_col in row and fake_col in row:
                             diff = row[real_col] - row[fake_col]
@@ -156,12 +162,15 @@ def process_results():
                                 d[m_name].append(diff)
 
                 elif task_type == "regression":
-                    if "avg_MSE_real" in row and "avg_MSE_fake" in row:
-                        diff = row["avg_MSE_fake"] - row["avg_MSE_real"]
+                    # Older CSVs called this MSE, but the evaluator computed MAPE.
+                    real_key = "avg_MAPE_real" if "avg_MAPE_real" in row else "avg_MSE_real"
+                    fake_key = "avg_MAPE_fake" if "avg_MAPE_fake" in row else "avg_MSE_fake"
+                    if real_key in row and fake_key in row:
+                        diff = row[fake_key] - row[real_key]
                         for d in [target_dict, ds_target]:
-                            if "MSE" not in d:
-                                d["MSE"] = []
-                            d["MSE"].append(diff)
+                            if "MAPE" not in d:
+                                d["MAPE"] = []
+                            d["MAPE"].append(diff)
 
                     for m_name, r_col, f_col in [
                         ("EVS", "avg_EVS_real", "avg_EVS_fake"),
@@ -329,9 +338,11 @@ def print_detailed_results(final_detailed, all_metrics):
     for ds_name in sorted(final_detailed.keys()):
         task_type = get_dataset_type(ds_name)
         if task_type == "classification":
-            ds_metrics = [m for m in all_metrics if m not in ["MSE", "EVS", "R2"]]
+            ds_metrics = [m for m in all_metrics if m not in ["MAPE", "EVS", "R2"]]
         else:
-            ds_metrics = [m for m in all_metrics if m not in ["ACC", "AUC", "F1"]]
+            ds_metrics = [m for m in all_metrics if m not in [
+                "ACC", "AUC", "F1 macro", "F1 (legacy)"
+            ]]
 
         print_table(
             final_detailed[ds_name], ds_metrics, title=f"DATASET: {ds_name.upper()}"

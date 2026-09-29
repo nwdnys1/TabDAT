@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 from sklearn import metrics
-from sklearn import model_selection
 from sklearn.preprocessing import (
     MinMaxScaler,
     StandardScaler,
@@ -22,16 +21,23 @@ from sklearn.ensemble import (
     RandomForestRegressor,
     GradientBoostingRegressor,
 )
-from dython.nominal import compute_associations
+try:
+    from dython.nominal import compute_associations
+except ImportError:
+    compute_associations = None
 from scipy.stats import wasserstein_distance
 from scipy.spatial import distance
-from synthcity.metrics import eval_statistical
-from synthcity.plugins.core.dataloader import GenericDataLoader
-from sdmetrics.single_table import LogisticDetection
+try:
+    from synthcity.metrics import eval_statistical
+    from synthcity.plugins.core.dataloader import GenericDataLoader
+except ImportError:
+    eval_statistical = None
+    GenericDataLoader = None
+try:
+    from sdmetrics.single_table import LogisticDetection
+except ImportError:
+    LogisticDetection = None
 from sklearn.preprocessing import OneHotEncoder
-import warnings
-
-warnings.filterwarnings("ignore")
 
 
 def supervised_model_training(
@@ -44,7 +50,7 @@ def supervised_model_training(
         pred = np.full(y_test.shape, single_class)
         acc = metrics.accuracy_score(y_test, pred) * 100
         f1_score = metrics.precision_recall_fscore_support(
-            y_test, pred, average="weighted", zero_division=0
+            y_test, pred, average="macro", zero_division=0
         )[2]
         auc = 0.0  # Penalize AUC as it cannot be computed
         return [acc, auc, f1_score]
@@ -89,7 +95,7 @@ def supervised_model_training(
                     y_test, predict, average="weighted", multi_class="ovr"
                 )
                 f1_score = metrics.precision_recall_fscore_support(
-                    y_test, pred, average="weighted", zero_division=0
+                    y_test, pred, average="macro", zero_division=0
                 )[2]
                 return [acc, auc, f1_score]
 
@@ -97,9 +103,9 @@ def supervised_model_training(
                 predict = model.predict_proba(x_test)[:, 1]
                 acc = metrics.accuracy_score(y_test, pred) * 100
                 auc = metrics.roc_auc_score(y_test, predict)
-                f1_score = metrics.precision_recall_fscore_support(
-                    y_test, pred, zero_division=0
-                )[2].mean()
+                f1_score = metrics.f1_score(
+                    y_test, pred, average="macro", zero_division=0
+                )
                 return [acc, auc, f1_score]
         except ValueError as e:
             # This error occurs if the synthetic data is missing some classes from the real data.
@@ -111,7 +117,7 @@ def supervised_model_training(
             ):
                 acc = metrics.accuracy_score(y_test, pred) * 100
                 f1_score = metrics.precision_recall_fscore_support(
-                    y_test, pred, average="weighted", zero_division=0
+                    y_test, pred, average="macro", zero_division=0
                 )[2]
                 # AUC cannot be calculated if predict_proba has wrong shape, so we return 0 as a penalty.
                 auc = 0.0
@@ -132,48 +138,48 @@ def get_utility_metrics(
     fake_paths,
     scaler="MinMax",
     type={"Classification": ["lr", "dt", "rf", "mlp"]},
-    test_ratio=0.20,
     cat_cols=[],
     target_col=None,
+    real_test_path=None,
 ):
+    """Train TRTR/TSTR models on disjoint real-train/synthetic rows and real test.
+
+    ``real_path`` is the generator's real training split. The test split must
+    be explicit; splitting ``real_path`` here could silently reuse rows that
+    were already seen by the generator.
+    """
+    if real_test_path is None:
+        raise ValueError("real_test_path must be an explicit generator-held-out CSV")
     data_real = pd.read_csv(real_path, dtype=object).dropna()
+    data_test = pd.read_csv(real_test_path, dtype=object).dropna()
+    if data_real.columns.tolist() != data_test.columns.tolist():
+        raise ValueError("Real training and test columns must match exactly")
 
     if target_col is None:
         target_col = data_real.columns.tolist()[-1]
-    
+
     data_real_y = data_real[target_col]
     data_real_X = data_real.drop([target_col], axis=1)
+    data_test_y = data_test[target_col]
+    data_test_X = data_test.drop([target_col], axis=1)
     # 将df的列名转换为np的列表索引
     if cat_cols != "all":
-        if target_col in cat_cols:
-            cat_cols.remove(target_col)
-        cat_cols = [data_real_X.columns.get_loc(col) for col in cat_cols]
+        cat_cols = [
+            data_real_X.columns.get_loc(col)
+            for col in cat_cols if col != target_col
+        ]
 
     data_real_y = data_real_y.to_numpy()
     data_real_X = data_real_X.to_numpy()
+    data_test_y = data_test_y.to_numpy()
+    data_test_X = data_test_X.to_numpy()
 
 
     problem = list(type.keys())[0]
     models = list(type.values())[0]
 
-    if problem == "Classification":
-        X_train_real, X_test_real, y_train_real, y_test_real = (
-            model_selection.train_test_split(
-                data_real_X,
-                data_real_y,
-                test_size=test_ratio,
-                stratify=data_real_y,
-                random_state=42,
-            )
-        )
-    else:
-        X_train_real, X_test_real, y_train_real, y_test_real = (
-            model_selection.train_test_split(
-                data_real_X, data_real_y, test_size=test_ratio, random_state=42
-            )
-        )
-        train = np.column_stack((X_train_real, y_train_real))
-        df = pd.DataFrame(train)
+    X_train_real, y_train_real = data_real_X, data_real_y
+    X_test_real, y_test_real = data_test_X, data_test_y
 
     if scaler == "MinMax":
         scaler = MinMaxScaler()
@@ -221,38 +227,14 @@ def get_utility_metrics(
     for fake_path in fake_paths:
 
         data_fake = pd.read_csv(fake_path, dtype=object).dropna()
+        if data_fake.columns.tolist() != data_real.columns.tolist():
+            raise ValueError(f"Synthetic columns do not match real training data: {fake_path}")
         data_fake_y = data_fake[target_col]
         data_fake_X = data_fake.drop([target_col], axis=1)
         data_fake_y = data_fake_y.to_numpy()
         data_fake_X = data_fake_X.to_numpy()
 
-        if problem == "Classification":
-            try:
-                # We only need the training part of the fake data, so test split is not used.
-                X_train_fake, _, y_train_fake, _ = model_selection.train_test_split(
-                    data_fake_X,
-                    data_fake_y,
-                    test_size=test_ratio,
-                    stratify=data_fake_y,
-                    random_state=42,
-                )
-            except ValueError as e:
-                # This error occurs if a class in synthetic data has only 1 member.
-                # We can't stratify, so we do a normal split instead.
-                if "The least populated class in y has only 1 member" in str(e):
-                    X_train_fake, _, y_train_fake, _ = model_selection.train_test_split(
-                        data_fake_X,
-                        data_fake_y,
-                        test_size=test_ratio,
-                        random_state=42,
-                    )
-                else:
-                    raise e  # Re-raise other unexpected ValueErrors
-        else:
-            X_train_fake, _, y_train_fake, _ = model_selection.train_test_split(
-                data_fake_X, data_fake_y, test_size=test_ratio, random_state=42
-            )
-            
+        X_train_fake, y_train_fake = data_fake_X, data_fake_y
 
         # Use the scaler fitted on real data to transform the fake training data
         X_train_fake_scaled = X_train_fake.copy()
@@ -282,13 +264,17 @@ def get_utility_metrics(
     return np.array(all_real_results), np.array(all_fake_results_avg).squeeze()
 
 
-def stat_sim(real_path, fake_path, cat_cols=[]):
+def stat_sim(real_path, fake_path, cat_cols=None):
+    if compute_associations is None:
+        raise ImportError("stat_sim requires dython; install evaluation dependencies")
 
     Stat_dict = {}
 
     real = pd.read_csv(real_path)
     fake = pd.read_csv(fake_path)
 
+    if cat_cols is None:
+        cat_cols = []
     if cat_cols == "all":
         cat_cols = real.columns.tolist()
 
@@ -299,7 +285,12 @@ def stat_sim(real_path, fake_path, cat_cols=[]):
 
     fake_corr = compute_associations(fake, cat_cols)
 
-    corr_dist = np.linalg.norm(real_corr - fake_corr)
+    # Average each distinct pair once; a Frobenius norm grows with table width.
+    pair_indices = np.triu_indices(len(real.columns), k=1)
+    association_error = (
+        float(np.mean(np.abs(np.asarray(real_corr) - np.asarray(fake_corr))[pair_indices]))
+        if len(pair_indices[0]) else np.nan
+    )
 
     cat_stat = []
     num_stat = []
@@ -322,7 +313,7 @@ def stat_sim(real_path, fake_path, cat_cols=[]):
             real_pdf_values = [real_pdf.get(cat, 0.0) for cat in all_categories]
             fake_pdf_values = [fake_pdf.get(cat, 0.0) for cat in all_categories]
 
-            # 5. 计算 JSD
+            # scipy returns Jensen-Shannon distance, not the divergence.
             Stat_dict[column] = distance.jensenshannon(
                 real_pdf_values, fake_pdf_values, base=2.0
             )
@@ -336,7 +327,12 @@ def stat_sim(real_path, fake_path, cat_cols=[]):
             Stat_dict[column] = wasserstein_distance(l1, l2)
             num_stat.append(Stat_dict[column])
 
-    return [fake_path, np.mean(num_stat), np.mean(cat_stat), corr_dist]
+    return [
+        fake_path,
+        float(np.mean(num_stat)) if num_stat else np.nan,
+        float(np.mean(cat_stat)) if cat_stat else np.nan,
+        association_error,
+    ]
 
 def get_extra_metrics(real_path, fake_path, cat_cols=[]):
     """
@@ -353,15 +349,15 @@ def get_extra_metrics(real_path, fake_path, cat_cols=[]):
         try:
             # 区分数值列和分类列
             num_cols = [c for c in real_data.columns if c not in cat_cols]
-            
+
             real_num = real_data[num_cols].values
             fake_num = fake_data[num_cols].values
-            
+
             if len(cat_cols) > 0:
                 encoder = OneHotEncoder(handle_unknown='infrequent_if_exist', sparse_output=False)
                 real_cat_oh = encoder.fit_transform(real_data[cat_cols].astype(str))
                 fake_cat_oh = encoder.transform(fake_data[cat_cols].astype(str))
-                
+
                 real_processed = pd.DataFrame(np.concatenate([real_num, real_cat_oh], axis=1))
                 fake_processed = pd.DataFrame(np.concatenate([fake_num, fake_cat_oh], axis=1))
             else:
@@ -373,7 +369,7 @@ def get_extra_metrics(real_path, fake_path, cat_cols=[]):
 
             quality_evaluator = eval_statistical.AlphaPrecision()
             qual_res = quality_evaluator.evaluate(X_real_loader, X_fake_loader)
-            
+
             alpha_precision = qual_res.get('delta_precision_alpha_naive', np.nan)
             beta_recall = qual_res.get('delta_coverage_beta_naive', np.nan)
         except Exception as e:
@@ -392,7 +388,7 @@ def get_extra_metrics(real_path, fake_path, cat_cols=[]):
                     metadata['columns'][i] = {'sdtype': 'categorical'}
                 else:
                     metadata['columns'][i] = {'sdtype': 'numerical'}
-            
+
             # 必须保证列名一致且为索引形式以匹配 metadata
             rd_c2st = real_data.copy()
             fd_c2st = fake_data.copy()
@@ -419,9 +415,10 @@ def get_extra_metrics(real_path, fake_path, cat_cols=[]):
 
 def privacy_metrics(real_path, fake_path, cat_cols):
     """
-    Computes privacy metrics.
+    Legacy privacy metrics, paused for the non-DP evaluation protocol.
 
     """
+    raise RuntimeError("Privacy evaluation is currently disabled")
     real = pd.read_csv(real_path, dtype=object).dropna().drop_duplicates()
     fake = pd.read_csv(fake_path, dtype=object).dropna().drop_duplicates()
 
@@ -513,19 +510,16 @@ def privacy_metrics(real_path, fake_path, cat_cols):
     ).reshape(1, 8)
 
 
-try:
-    from syntheval import SynthEval
-except ImportError:
-    print("SynthEval is not installed. Please install it using 'pip install syntheval'")
-    SynthEval = None
+# Privacy metrics are paused; do not import their optional dependencies here.
+# from syntheval import SynthEval
+SynthEval = None
 
 
 def get_adr_metric(real_path, fake_path, cat_cols=None):
     """
     Computes the Adversarial Accuracy Reciprocal (ADR) using the syntheval library.
     """
-    if SynthEval is None:
-        return [fake_path, np.nan]
+    raise RuntimeError("Privacy evaluation is currently disabled")
 
     real_data = pd.read_csv(real_path)
     fake_data = pd.read_csv(fake_path)
@@ -536,7 +530,7 @@ def get_adr_metric(real_path, fake_path, cat_cols=None):
     try:
         evaluator = SynthEval(real_data, cat_cols=cat_cols, verbose=False)
         results = evaluator.evaluate(fake_data, att_discl={})
-        print(f"\nADR results for {fake_path}: {results["val"].iloc[0]}")
+        print(f"\nADR results for {fake_path}: {results['val'].iloc[0]}")
         # ADR is the reciprocal of the adversarial accuracy
         return [fake_path, results["val"].iloc[0]]
     except Exception as e:
@@ -548,8 +542,7 @@ def get_eps_metric(real_path, fake_path, cat_cols=None):
     """
     Computes the Epsilon metric using the syntheval library.
     """
-    if SynthEval is None:
-        return [fake_path, np.nan]
+    raise RuntimeError("Privacy evaluation is currently disabled")
 
     real_data = pd.read_csv(real_path)
     fake_data = pd.read_csv(fake_path)
@@ -560,7 +553,7 @@ def get_eps_metric(real_path, fake_path, cat_cols=None):
     try:
         evaluator = SynthEval(real_data, cat_cols=cat_cols, verbose=False)
         results = evaluator.evaluate(fake_data, eps_risk={})
-        print(f"\nEpsilon results for {fake_path}: {results["val"].iloc[0]}")
+        print(f"\nEpsilon results for {fake_path}: {results['val'].iloc[0]}")
         return [fake_path, results["val"].iloc[0]]
     except Exception as e:
         print(f"Error calculating Epsilon for {fake_path}: {e}")
@@ -571,8 +564,7 @@ def get_mia_metric(real_path, fake_path, cat_cols=None):
     """
     Computes the Membership Inference Attack (MIA) metric using the syntheval library.
     """
-    if SynthEval is None:
-        return [fake_path, np.nan]
+    raise RuntimeError("Privacy evaluation is currently disabled")
 
     real_data = pd.read_csv(real_path)
     fake_data = pd.read_csv(fake_path)
@@ -583,7 +575,7 @@ def get_mia_metric(real_path, fake_path, cat_cols=None):
     try:
         evaluator = SynthEval(real_data, cat_cols=cat_cols, verbose=False)
         results = evaluator.evaluate(fake_data, mia_risk={})
-        print(f"\nMIA results for {fake_path}: {results["val"].iloc[0]}")
+        print(f"\nMIA results for {fake_path}: {results['val'].iloc[0]}")
         return [fake_path, results["val"].iloc[0]]
     except Exception as e:
         print(f"Error calculating MIA for {fake_path}: {e}")
@@ -594,8 +586,7 @@ def get_hit_metric(real_path, fake_path, cat_cols=None):
     """
     Computes the Hitting Rate (HIT) metric using the syntheval library.
     """
-    if SynthEval is None:
-        return [fake_path, np.nan]
+    raise RuntimeError("Privacy evaluation is currently disabled")
 
     real_data = pd.read_csv(real_path)
     fake_data = pd.read_csv(fake_path)
@@ -606,7 +597,7 @@ def get_hit_metric(real_path, fake_path, cat_cols=None):
     try:
         evaluator = SynthEval(real_data, cat_cols=cat_cols, verbose=False)
         results = evaluator.evaluate(fake_data, hit_rate={})
-        print(f"\nHIT results for {fake_path}: {results["val"].iloc[0]}")
+        print(f"\nHIT results for {fake_path}: {results['val'].iloc[0]}")
         return [fake_path, results["val"].iloc[0]]
     except Exception as e:
         print(f"Error calculating HIT for {fake_path}: {e}")
@@ -617,8 +608,7 @@ def get_nnaa_metric(real_path, fake_path, cat_cols=None):
     """
     Computes the Nearest Neighbor Adversarial Accuracy (NNAA) metric using the syntheval library.
     """
-    if SynthEval is None:
-        return [fake_path, np.nan]
+    raise RuntimeError("Privacy evaluation is currently disabled")
 
     real_data = pd.read_csv(real_path)
     fake_data = pd.read_csv(fake_path)
@@ -629,7 +619,7 @@ def get_nnaa_metric(real_path, fake_path, cat_cols=None):
     try:
         evaluator = SynthEval(real_data, cat_cols=cat_cols, verbose=False)
         results = evaluator.evaluate(fake_data, nnaa={})
-        print(f"\nNNAA results for {fake_path}: {results["val"].iloc[0]}")
+        print(f"\nNNAA results for {fake_path}: {results['val'].iloc[0]}")
         return [fake_path, results["val"].iloc[0]]
     except Exception as e:
         print(f"Error calculating NNAA for {fake_path}: {e}")
