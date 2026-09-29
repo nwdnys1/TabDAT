@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import glob
 import os
+import argparse
 
 cat_cols = {
     "adult": [
@@ -150,29 +151,26 @@ def eval_ml(dataset):
     print("Machine Learning Utility Results:")
     print(ml_results.to_string(index=False))
 
-def eval_extra(dataset):
-    extra_res_avg = []
-    extra_columns = ["Dataset", "Alpha-Precision", "Beta-Recall", "C2ST"]
+def eval_extra(dataset, *, max_rows=2000, seed=42):
+    extra_rows = []
+    columns = ["Dataset", "Alpha-Precision (naive)", "Beta-Recall (naive)",
+               "C2ST LogisticDetection", "Metric Rows"]
 
     for fake_path in fake_paths:
         print(f"  Evaluating extra metrics for: {fake_path}")
-        try:
-            res = get_extra_metrics(real_path, fake_path, cat_cols=cat_cols.get(dataset, []))
-            extra_res_avg.append([
-                fake_path,
-                res.get("alpha_precision", np.nan),
-                res.get("beta_recall", np.nan),
-                res.get("c2st", np.nan)
-            ])
-        except Exception as e:
-            print(f"  Error evaluating extra metrics for {fake_path}: {e}")
-            extra_res_avg.append([fake_path, np.nan, np.nan, np.nan])
+        result = get_extra_metrics(
+            real_path, fake_path, cat_cols=cat_cols.get(dataset, []),
+            max_rows=max_rows, seed=seed,
+        )
+        extra_rows.append([
+            fake_path, result["alpha_precision"], result["beta_recall"],
+            result["c2st"], result["n_rows"],
+        ])
 
-    extra_results = pd.DataFrame(extra_res_avg, columns=extra_columns)
+    output = pd.DataFrame(extra_rows, columns=columns)
     os.makedirs(f"results/{suffix}", exist_ok=True)
-    extra_results.to_csv(f"results/{suffix}/{dataset}_extra_results.csv", index=False)
-    print("Extra Metrics Results (Alpha/Beta/C2ST):")
-    print(extra_results.to_string(index=False))
+    output.to_csv(f"results/{suffix}/{dataset}_extra_results.csv", index=False)
+    print(output.to_string(index=False))
 
 
 def eval_constraint(dataset):
@@ -221,18 +219,16 @@ def eval_constraint(dataset):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Evaluate TabDAT synthetic tables")
+    parser.add_argument("--datasets", nargs="+", choices=problem_types.keys(),
+                        default=list(problem_types))
+    parser.add_argument("--extra", action="store_true",
+                        help="Compute alpha/beta and C2ST (optional dependencies)")
+    parser.add_argument("--extra-max-rows", type=int, default=2000)
+    parser.add_argument("--extra-seed", type=int, default=42)
+    args = parser.parse_args()
 
-    for dataset in [
-        "adult",
-        "barley",
-        "ecoli70",
-        "loan",
-        "credit",
-        "insurance",
-        "king",
-        "covertype",
-        "pm25"
-    ]:
+    for dataset in args.datasets:
         suffix = "holdout_v1"
 
         cur_dir = os.path.dirname(os.path.abspath(__file__))
@@ -251,5 +247,6 @@ if __name__ == "__main__":
         print(f"Evaluating dataset: {dataset}")
         eval_ss(dataset)
         eval_ml(dataset)
-        # eval_extra(dataset)
+        if args.extra:
+            eval_extra(dataset, max_rows=args.extra_max_rows, seed=args.extra_seed)
         # eval_constraint(dataset)

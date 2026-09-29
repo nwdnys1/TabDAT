@@ -334,82 +334,73 @@ def stat_sim(real_path, fake_path, cat_cols=None):
         association_error,
     ]
 
-def get_extra_metrics(real_path, fake_path, cat_cols=[]):
+def get_extra_metrics(real_path, fake_path, cat_cols=None, *, max_rows=2000, seed=42):
+    """Compute naive alpha/beta and LogisticDetection on equal-size samples.
+
+    Record n_rows with scores; formal comparisons need a predeclared common
+    sample size. These quality metrics do not establish DP privacy.
     """
-    Computes Alpha-Precision, Beta-Recall, and C2ST (Logistic Detection).
-    """
+    missing = []
+    if eval_statistical is None or GenericDataLoader is None:
+        missing.append("synthcity==0.2.12")
+    if LogisticDetection is None:
+        missing.append("sdmetrics==0.21.0")
+    if missing:
+        raise ImportError("Extra metrics require: " + ", ".join(missing))
+    if max_rows is not None and max_rows < 2:
+        raise ValueError("max_rows must be at least 2 or None")
+
     real_data = pd.read_csv(real_path).dropna()
     fake_data = pd.read_csv(fake_path).dropna()
-
+    if real_data.columns.tolist() != fake_data.columns.tolist():
+        raise ValueError("Real and synthetic columns must match exactly")
     if cat_cols == "all":
         cat_cols = real_data.columns.tolist()
-
-    # --- 1. 准备数据用于 synthcity (Alpha/Beta) ---
-    if eval_statistical is not None:
-        try:
-            # 区分数值列和分类列
-            num_cols = [c for c in real_data.columns if c not in cat_cols]
-
-            real_num = real_data[num_cols].values
-            fake_num = fake_data[num_cols].values
-
-            if len(cat_cols) > 0:
-                encoder = OneHotEncoder(handle_unknown='infrequent_if_exist', sparse_output=False)
-                real_cat_oh = encoder.fit_transform(real_data[cat_cols].astype(str))
-                fake_cat_oh = encoder.transform(fake_data[cat_cols].astype(str))
-
-                real_processed = pd.DataFrame(np.concatenate([real_num, real_cat_oh], axis=1))
-                fake_processed = pd.DataFrame(np.concatenate([fake_num, fake_cat_oh], axis=1))
-            else:
-                real_processed = pd.DataFrame(real_num)
-                fake_processed = pd.DataFrame(fake_num)
-
-            X_real_loader = GenericDataLoader(real_processed)
-            X_fake_loader = GenericDataLoader(fake_processed)
-
-            quality_evaluator = eval_statistical.AlphaPrecision()
-            qual_res = quality_evaluator.evaluate(X_real_loader, X_fake_loader)
-
-            alpha_precision = qual_res.get('delta_precision_alpha_naive', np.nan)
-            beta_recall = qual_res.get('delta_coverage_beta_naive', np.nan)
-        except Exception as e:
-            print(f"Error calculating Alpha/Beta metrics: {e}")
-            alpha_precision, beta_recall = np.nan, np.nan
     else:
-        alpha_precision, beta_recall = np.nan, np.nan
+        cat_cols = [] if cat_cols is None else list(cat_cols)
+    unknown = set(cat_cols) - set(real_data.columns)
+    if unknown:
+        raise ValueError(f"Unknown categorical columns: {sorted(unknown)}")
 
-    # --- 2. 准备数据用于 sdmetrics (C2ST) ---
-    if LogisticDetection is not None:
-        try:
-            # 构建 sdmetrics 所需的 metadata 格式
-            metadata = {'columns': {}}
-            for i, col in enumerate(real_data.columns):
-                if col in cat_cols:
-                    metadata['columns'][i] = {'sdtype': 'categorical'}
-                else:
-                    metadata['columns'][i] = {'sdtype': 'numerical'}
+    n_rows = min(len(real_data), len(fake_data))
+    if max_rows is not None:
+        n_rows = min(n_rows, max_rows)
+    if n_rows < 2:
+        raise ValueError("Extra metrics need at least 2 complete rows per table")
+    real_data = real_data.sample(n=n_rows, random_state=seed).reset_index(drop=True)
+    fake_data = fake_data.sample(n=n_rows, random_state=seed).reset_index(drop=True)
+    num_cols = [col for col in real_data.columns if col not in cat_cols]
 
-            # 必须保证列名一致且为索引形式以匹配 metadata
-            rd_c2st = real_data.copy()
-            fd_c2st = fake_data.copy()
-            rd_c2st.columns = range(len(rd_c2st.columns))
-            fd_c2st.columns = range(len(fd_c2st.columns))
+    # Fit the categorical encoder on the reference only.
+    arrays_real, arrays_fake = [], []
+    if num_cols:
+        arrays_real.append(real_data[num_cols].apply(pd.to_numeric, errors="raise").to_numpy(dtype=float))
+        arrays_fake.append(fake_data[num_cols].apply(pd.to_numeric, errors="raise").to_numpy(dtype=float))
+    if cat_cols:
+        encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+        arrays_real.append(encoder.fit_transform(real_data[cat_cols].astype(str)))
+        arrays_fake.append(encoder.transform(fake_data[cat_cols].astype(str)))
+    real_processed = pd.DataFrame(np.concatenate(arrays_real, axis=1))
+    fake_processed = pd.DataFrame(np.concatenate(arrays_fake, axis=1))
+    quality = eval_statistical.AlphaPrecision().evaluate(
+        GenericDataLoader(real_processed), GenericDataLoader(fake_processed)
+    )
+    # Match TabSyn's naive-space variant, not synthcity's "_OC" score.
+    alpha_precision = float(quality["delta_precision_alpha_naive"])
+    beta_recall = float(quality["delta_coverage_beta_naive"])
 
-            c2st_score = LogisticDetection.compute(
-                real_data=rd_c2st,
-                synthetic_data=fd_c2st,
-                metadata=metadata
-            )
-        except Exception as e:
-            print(f"Error calculating C2ST: {e}")
-            c2st_score = np.nan
-    else:
-        c2st_score = np.nan
-
+    metadata = {"columns": {
+        col: {"sdtype": "categorical" if col in cat_cols else "numerical"}
+        for col in real_data.columns
+    }}
+    c2st_score = float(LogisticDetection.compute(
+        real_data=real_data, synthetic_data=fake_data, metadata=metadata
+    ))
     return {
         "alpha_precision": alpha_precision,
         "beta_recall": beta_recall,
-        "c2st": c2st_score
+        "c2st": c2st_score,
+        "n_rows": n_rows,
     }
 
 

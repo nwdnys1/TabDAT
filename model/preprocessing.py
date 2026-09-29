@@ -78,3 +78,43 @@ class PreprocessingMixin:
         self.data = torch.tensor(processed_data.values, dtype=torch.float32)
         print(self.data)
 
+    def transform_holdout(self, frame):
+        """Transform held-out rows with train-fitted encoders and scalers only."""
+        if frame.columns.tolist() != self.col_names:
+            raise ValueError("Holdout columns must match training columns and order")
+        if frame.empty or frame.isna().any().any():
+            raise ValueError("Holdout data must contain complete rows")
+
+        transformed = frame.copy()
+        if self.log_cols:
+            for idx in self.log_cols:
+                col = self.col_names[idx]
+                values = pd.to_numeric(transformed[col], errors="raise").to_numpy(dtype=float)
+                lower = self.lower_bounds[col]
+                if lower > 0:
+                    arguments = values
+                elif lower == 0:
+                    arguments = values + 1
+                else:
+                    arguments = values - lower + 1
+                if np.any(arguments <= 0):
+                    raise ValueError(f"Holdout column {col!r} is outside the log domain")
+                transformed[col] = np.log(arguments)
+
+        for idx, col in enumerate(self.col_names):
+            scaler = self.scalers[idx]
+            if idx in self.var_types.get("cat", {}):
+                try:
+                    transformed[col] = scaler.transform(transformed[col].to_numpy())
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Holdout column {col!r} contains unseen categories; "
+                        "declare a category policy before training"
+                    ) from exc
+            else:
+                values = pd.to_numeric(transformed[col], errors="raise").to_numpy().reshape(-1, 1)
+                transformed[col] = scaler.transform(values).ravel()
+        values = transformed.to_numpy(dtype=np.float32)
+        if not np.isfinite(values).all():
+            raise ValueError("Holdout transform produced non-finite values")
+        return torch.from_numpy(values)

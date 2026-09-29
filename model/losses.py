@@ -10,7 +10,10 @@ else:
 
 
 class LossMixin:
-    def compute_loss(self, x, outputs, mask_indices, return_components=False):
+    def compute_loss(
+        self, x, outputs, mask_indices, return_components=False, *,
+        ddpm_timesteps=None, ddpm_noise=None, return_per_column=False,
+    ):
         """
         Computes masked-target loss, summed over columns and averaged over rows
         (the original batch normalization). DDPM uses noise-prediction MSE;
@@ -31,6 +34,7 @@ class LossMixin:
         nll = x.new_zeros(())
         categorical_loss = x.new_zeros(())
         continuous_loss = x.new_zeros(())
+        column_sums = [] if return_per_column else None
         for i in range(self.num_vars):
             selected = mask_indices[:, i]
             target = x[selected, i]
@@ -39,6 +43,8 @@ class LossMixin:
                 # Differentiable zero, including for a fully unmasked batch.
                 # An empty sum avoids evaluating invalid unselected values.
                 nll = nll + prediction.sum()
+                if return_per_column:
+                    column_sums.append(x.new_zeros(()))
                 continue
             if i in self.var_types.get("cat", {}):
                 # Categorical Cross-Entropy Loss
@@ -50,7 +56,11 @@ class LossMixin:
                 nll += contribution
                 continuous_loss += contribution.detach()
             elif self.continuous_head == "ddpm":
-                contribution = self.prediction_heads[str(i)].loss(prediction, target).sum()
+                contribution = self.prediction_heads[str(i)].loss(
+                    prediction, target,
+                    timesteps=None if ddpm_timesteps is None else ddpm_timesteps[selected, i],
+                    noise=None if ddpm_noise is None else ddpm_noise[selected, i],
+                ).sum()
                 nll += contribution
                 continuous_loss += contribution.detach()
             else:
@@ -64,11 +74,18 @@ class LossMixin:
                 nll += contribution
                 continuous_loss += contribution.detach()
 
+            if return_per_column:
+                column_sums.append(contribution.detach())
+
         nll /= x.shape[0]  # Average over batch
 
         if return_components:
-            return nll, {
+            parts = {
                 "categorical": categorical_loss / x.shape[0],
                 "continuous": continuous_loss / x.shape[0],
             }
+            if return_per_column:
+                parts["per_column"] = torch.stack(column_sums) / x.shape[0]
+                parts["target_counts"] = mask_indices.sum(dim=0)
+            return nll, parts
         return nll

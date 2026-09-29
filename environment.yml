@@ -13,3 +13,13 @@ dependencies:
       - scipy==1.11.4
       - scikit-learn==1.6.1
       - six==1.17.0
+      # Current lightweight statistical evaluation and legacy dython compatibility.
+      - setuptools==78.1.1
+      - dython==0.6.4.post1
+      - matplotlib==3.10.0
+      - seaborn==0.13.2
+      # Optional quality metrics are not part of this core environment.
+      # If installing sdmetrics/synthcity separately, resolve transitive
+      # dependencies and run `python -m pip check` before using --extra.
+      # synthcity==0.2.12 declares torch<2.3 and networkx<3, unlike this env.
+      # Do not treat these quality metrics as DP guarantees.

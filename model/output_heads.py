@@ -99,10 +99,18 @@ class ConditionalDDPMHead(nn.Module):
         )
         return self.denoiser(inputs).squeeze(-1)
 
-    def loss(self, context, targets):
+    def loss(self, context, targets, *, timesteps=None, noise=None):
         """Return one noise-prediction squared error per selected row."""
-        timesteps = torch.randint(self.steps, (targets.shape[0],), device=targets.device)
-        noise = torch.randn_like(targets)
+        if timesteps is None:
+            timesteps = torch.randint(self.steps, (targets.shape[0],), device=targets.device)
+        if noise is None:
+            noise = torch.randn_like(targets)
+        if timesteps.shape != targets.shape or noise.shape != targets.shape:
+            raise ValueError("DDPM validation timesteps and noise must match targets")
+        if timesteps.dtype != torch.long or timesteps.device != targets.device:
+            raise ValueError("DDPM timesteps must be long tensors on the target device")
+        if noise.device != targets.device:
+            raise ValueError("DDPM noise must be on the target device")
         alpha_bar = self.alpha_bars[timesteps].to(dtype=targets.dtype)
         noisy = alpha_bar.sqrt() * targets + (1.0 - alpha_bar).sqrt() * noise
         predicted_noise = self.predict_noise(noisy, timesteps, context)

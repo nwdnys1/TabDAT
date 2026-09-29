@@ -4,6 +4,11 @@ import pandas as pd
 import numpy as np
 import re
 
+MAXIMIZE_METRICS = {
+    "AP naive", "BR naive", "C2ST LogisticDetection",
+    "AP (legacy)", "BR (legacy)", "C2ST (legacy)",
+}
+
 DATASET_TYPES = {
     "adult": "classification",
     "barley": "classification",
@@ -17,9 +22,9 @@ DATASET_TYPES = {
 }
 
 BASE_PATHS = [
-    # "results/",
-    # "results/mine",
-    "results/baselines",
+    # Keep holdout_v1 separate from legacy full-data baseline results.
+    "results/holdout_v1",
+    # "results/baselines",
     # "results/eps1.0",
     # "results/eps2.0",
     # "results/eps4.0",
@@ -132,11 +137,20 @@ def process_results():
                         d[k].append(v)
             
             elif is_extra:
-                ap = row.get("Alpha-Precision")
-                br = row.get("Beta-Recall")
-                c2st = row.get("C2ST")
-                
-                for k, v in [("AP", ap), ("BR", br), ("C2ST", c2st)]:
+                if "Alpha-Precision (naive)" in row:
+                    values = [
+                        ("AP naive", row["Alpha-Precision (naive)"]),
+                        ("BR naive", row["Beta-Recall (naive)"]),
+                        ("C2ST LogisticDetection", row["C2ST LogisticDetection"]),
+                    ]
+                else:
+                    values = [
+                        ("AP (legacy)", row.get("Alpha-Precision")),
+                        ("BR (legacy)", row.get("Beta-Recall")),
+                        ("C2ST (legacy)", row.get("C2ST")),
+                    ]
+
+                for k, v in values:
                     if not pd.isna(v):
                         for d in [target_dict, ds_target]:
                             if k not in d:
@@ -285,7 +299,10 @@ def print_table(final_table, metrics_order, title="EXPERIMENT RESULTS"):
 
     for m in metrics_order:
         vals = col_values[m]
-        sorted_unique_vals = sorted(list(set([v for v in vals if v != np.inf])))
+        sorted_unique_vals = sorted(
+            set(v for v in vals if v != np.inf),
+            reverse=m in MAXIMIZE_METRICS,
+        )
 
         if len(sorted_unique_vals) >= 1:
             best_val = sorted_unique_vals[0]
@@ -296,7 +313,7 @@ def print_table(final_table, metrics_order, title="EXPERIMENT RESULTS"):
                 second_indices[m] = [i for i, v in enumerate(vals) if v == second_val]
                 if abs(second_val) > 1e-6:
                     improvement_vals[m] = (
-                        f"{(second_val - best_val) / abs(second_val) * 100:.1f}%"
+                        f"{abs(best_val - second_val) / abs(second_val) * 100:.1f}%"
                     )
                 else:
                     improvement_vals[m] = f"{second_val - best_val:.3f}"
@@ -355,7 +372,14 @@ if __name__ == "__main__":
     final_results = aggregate_and_format(raw_data)
     final_detailed = aggregate_detailed(detailed_data)
 
-    all_metrics = ["AP","BR","C2ST"]
+    candidate_metrics = [
+        "AP naive", "BR naive", "C2ST LogisticDetection",
+        "AP (legacy)", "BR (legacy)", "C2ST (legacy)",
+    ]
+    all_metrics = [
+        metric for metric in candidate_metrics
+        if any(metric in scores for scores in final_results.values())
+    ]
     print_table(final_results, all_metrics)
 
     # print_detailed_results(final_detailed, all_metrics)

@@ -15,7 +15,7 @@ else:
 
 
 class SamplingMixin:
-    def _topological_sort(self, w):
+    def _topological_sort(self, w, verbose=True):
         """
         Performs a topological sort based on continuous edge weights.
         Iteratively picks the node with the minimum weighted in-degree.
@@ -45,7 +45,8 @@ class SamplingMixin:
         # import random
         # sampling_order = random.sample(range(self.num_vars), self.num_vars)
         
-        print(f"Sampling order: {sampling_order}")
+        if verbose:
+            print(f"Sampling order: {sampling_order}")
         return sampling_order
 
     @torch.no_grad()

@@ -1,11 +1,12 @@
 """TabDAT methods extracted without changing their implementation."""
 
 import os
+import tempfile
 import torch
 
 
 class CheckpointMixin:
-    def save(self, path):
+    def save(self, path, *, selection=None, atomic=False):
         """
         Saves the model state, configuration, and scalers to a file.
         """
@@ -30,8 +31,21 @@ class CheckpointMixin:
             },
             "scalers": self.scalers,  # Save sklearn scalers (pickle)
         }
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(checkpoint, path)
+        if selection is not None:
+            checkpoint["selection"] = selection
+        directory = os.path.dirname(path) or "."
+        os.makedirs(directory, exist_ok=True)
+        if atomic:
+            descriptor, temporary = tempfile.mkstemp(prefix="checkpoint-", suffix=".pth", dir=directory)
+            os.close(descriptor)
+            try:
+                torch.save(checkpoint, temporary)
+                os.replace(temporary, path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        else:
+            torch.save(checkpoint, path)
         print(f"Model saved to {path}")
 
     @classmethod
@@ -67,6 +81,7 @@ class CheckpointMixin:
         model.col_names = config["col_names"]
         model.training_config = config.get("training_config")
         model.last_sampling_order = config.get("last_sampling_order")
+        model.checkpoint_selection = checkpoint.get("selection")
 
         model.to(device)
         model.eval()
