@@ -8,12 +8,14 @@ if __package__:
     from .sampling import SamplingMixin
     from .training import TrainingMixin
     from .checkpoint import CheckpointMixin
+    from .output_heads import ConditionalDDPMHead
 else:
     from preprocessing import PreprocessingMixin
     from losses import LossMixin
     from sampling import SamplingMixin
     from training import TrainingMixin
     from checkpoint import CheckpointMixin
+    from output_heads import ConditionalDDPMHead
 
 torch.backends.mha.set_fastpath_enabled(False)
 
@@ -32,6 +34,10 @@ class TabDAT(
         log_cols=None,
         dropout=0.1,
         device="cuda",
+        continuous_head="gaussian",
+        gmm_components=5,
+        diffusion_steps=100,
+        diffusion_hidden_dim=None,
     ):
         """
         Transformer-based Hybrid Bayesian Network.
@@ -46,8 +52,21 @@ class TabDAT(
             cat_cols (list, optional): List of categorical column indices.
             log_cols (list, optional): List of logarithmic transformation column indices.
             dropout (float): The dropout value.
+            continuous_head (str): One of 'gaussian', 'gmm', or 'ddpm'.
+            gmm_components (int): Number of Gaussian components for the GMM head.
+            diffusion_steps (int): Number of DDPM noise and sampling steps.
+            diffusion_hidden_dim (int, optional): Width of the scalar denoiser.
         """
         super(TabDAT, self).__init__()
+
+        if continuous_head not in {"gaussian", "gmm", "ddpm"}:
+            raise ValueError("continuous_head must be 'gaussian', 'gmm', or 'ddpm'")
+        if gmm_components < 1:
+            raise ValueError("gmm_components must be positive")
+        if diffusion_steps < 2:
+            raise ValueError("diffusion_steps must be at least 2")
+        if diffusion_hidden_dim is not None and diffusion_hidden_dim < 1:
+            raise ValueError("diffusion_hidden_dim must be positive")
 
         self.data = None
         self.file_path = file_path
@@ -60,6 +79,12 @@ class TabDAT(
         self.device = device
         self.cat_cols = cat_cols
         self.log_cols = log_cols
+        self.continuous_head = continuous_head
+        self.gmm_components = gmm_components
+        self.diffusion_steps = diffusion_steps
+        self.diffusion_hidden_dim = (
+            diffusion_hidden_dim if diffusion_hidden_dim is not None else max(32, embed_dim)
+        )
 
         self._load_and_preprocess_data(file_path)
 
@@ -101,12 +126,24 @@ class TabDAT(
                     nn.ReLU(),
                     nn.Linear(embed_dim // 2, cardinality),
                 )
-            # For continuous variables, output mean and log_std
-            else:
+            # Preserve the exact legacy Gaussian module structure and keys.
+            elif continuous_head == "gaussian":
                 self.prediction_heads[str(i)] = nn.Sequential(
                     nn.Linear(embed_dim, embed_dim // 2),
                     nn.ReLU(),
                     nn.Linear(embed_dim // 2, 2),  # mu and log_sigma
+                )
+            elif continuous_head == "gmm":
+                self.prediction_heads[str(i)] = nn.Sequential(
+                    nn.Linear(embed_dim, embed_dim // 2),
+                    nn.ReLU(),
+                    nn.Linear(embed_dim // 2, 3 * gmm_components),
+                )
+            else:
+                self.prediction_heads[str(i)] = ConditionalDDPMHead(
+                    context_dim=embed_dim,
+                    hidden_dim=self.diffusion_hidden_dim,
+                    steps=diffusion_steps,
                 )
 
     def _create_mask(self):

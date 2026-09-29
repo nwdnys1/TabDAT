@@ -3,12 +3,18 @@
 import torch
 import torch.nn.functional as F
 
+if __package__:
+    from .output_heads import gmm_nll
+else:
+    from output_heads import gmm_nll
+
 
 class LossMixin:
-    def compute_loss(self, x, outputs, mask_indices):
+    def compute_loss(self, x, outputs, mask_indices, return_components=False):
         """
-        Computes masked-target negative log-likelihood, summed over columns
-        and averaged over rows (the original batch normalization).
+        Computes masked-target loss, summed over columns and averaged over rows
+        (the original batch normalization). DDPM uses noise-prediction MSE;
+        Gaussian and GMM use negative log-likelihood.
 
         Args:
             x (torch.Tensor): The input data.
@@ -17,11 +23,14 @@ class LossMixin:
                 identifies an unknown target included in the loss.
 
         Returns:
-            float: The total loss.
+            Tensor, or (Tensor, dict) when return_components is True.
         """
 
-        # Negative Log-Likelihood
+        # Keep the legacy Gaussian accumulation and batch-size normalization.
+        # The DDPM term below is a denoising MSE, not a log likelihood.
         nll = x.new_zeros(())
+        categorical_loss = x.new_zeros(())
+        continuous_loss = x.new_zeros(())
         for i in range(self.num_vars):
             selected = mask_indices[:, i]
             target = x[selected, i]
@@ -33,7 +42,17 @@ class LossMixin:
                 continue
             if i in self.var_types.get("cat", {}):
                 # Categorical Cross-Entropy Loss
-                nll += F.cross_entropy(prediction, target.long(), reduction="sum")
+                contribution = F.cross_entropy(prediction, target.long(), reduction="sum")
+                nll += contribution
+                categorical_loss += contribution.detach()
+            elif self.continuous_head == "gmm":
+                contribution = gmm_nll(prediction, target, self.gmm_components).sum()
+                nll += contribution
+                continuous_loss += contribution.detach()
+            elif self.continuous_head == "ddpm":
+                contribution = self.prediction_heads[str(i)].loss(prediction, target).sum()
+                nll += contribution
+                continuous_loss += contribution.detach()
             else:
                 # Gaussian Negative Log-Likelihood
                 mu, log_sigma = prediction.chunk(2, dim=-1)
@@ -41,9 +60,15 @@ class LossMixin:
                 # Clamp sigma to avoid numerical instability
                 sigma = torch.clamp(sigma, min=1e-5)
                 dist = torch.distributions.Normal(mu.squeeze(-1), sigma.squeeze(-1))
-                nll -= dist.log_prob(target).sum()
+                contribution = -dist.log_prob(target).sum()
+                nll += contribution
+                continuous_loss += contribution.detach()
 
         nll /= x.shape[0]  # Average over batch
 
+        if return_components:
+            return nll, {
+                "categorical": categorical_loss / x.shape[0],
+                "continuous": continuous_loss / x.shape[0],
+            }
         return nll
-

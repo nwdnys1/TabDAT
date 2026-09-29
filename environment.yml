@@ -1,0 +1,15 @@
+name: tabdat
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      # Core TabDAT model and file-free regression tests. Add baseline and
+      # evaluation dependencies only when those workflows are in scope.
+      - torch==2.7.0
+      - numpy==1.26.4
+      - pandas==2.2.3
+      - scipy==1.11.4
+      - scikit-learn==1.6.1
+      - six==1.17.0

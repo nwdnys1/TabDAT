@@ -43,6 +43,11 @@ class TrainingMixin:
             dp_clip (float): Clipping threshold for gradients.
             dp_micro_batch_size (int): Micro-batch size for differential privacy.
         """
+        if dp and self.continuous_head != "gaussian":
+            raise NotImplementedError(
+                "Legacy DP training has not been audited for GMM or DDPM heads"
+            )
+
         # Use pre-loaded data if no new data is provided
         if data is None:
             if self.data is not None:
@@ -84,6 +89,8 @@ class TrainingMixin:
         for epoch in range(epochs):
 
             total_loss = 0
+            categorical_loss = 0.0
+            continuous_loss = 0.0
             self.train()
             for batch_data in dataloader:
                 batch_data = batch_data.to(device)
@@ -137,12 +144,15 @@ class TrainingMixin:
                     )
                     outputs = self.forward(embeddings=masked_embeddings)
 
-                    loss = self.compute_loss(
+                    loss, loss_parts = self.compute_loss(
                         batch_data,
                         outputs,
                         mask_indices,
+                        return_components=True,
                     )
                     total_loss += loss.item()
+                    categorical_loss += loss_parts["categorical"].item()
+                    continuous_loss += loss_parts["continuous"].item()
 
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
@@ -164,7 +174,14 @@ class TrainingMixin:
 
             if (epoch + 1) % 10 == 0:
                 total_loss /= len(dataloader)
-                print(f"Epoch [{epoch+1}/{epochs}], Loss: {total_loss:.4f} ")
+                if dp:
+                    print(f"Epoch [{epoch+1}/{epochs}], Loss: {total_loss:.4f} ")
+                else:
+                    print(
+                        f"Epoch [{epoch+1}/{epochs}], Loss: {total_loss:.4f} "
+                        f"(cat: {categorical_loss / len(dataloader):.4f}, "
+                        f"cont: {continuous_loss / len(dataloader):.4f})"
+                    )
 
             if sample and (epoch + 1) % sample == 0:
                 df = self.sample(

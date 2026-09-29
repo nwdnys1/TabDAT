@@ -6,6 +6,11 @@ import torch
 import torch.nn.functional as F
 from sklearn.preprocessing import LabelEncoder
 
+if __package__:
+    from .output_heads import sample_gmm
+else:
+    from output_heads import sample_gmm
+
 
 class SamplingMixin:
     def _topological_sort(self, w):
@@ -71,6 +76,12 @@ class SamplingMixin:
                 # Categorical: sample from the predicted distribution
                 probs = F.softmax(var_pred, dim=-1)
                 sampled_values = torch.multinomial(probs, num_samples=1).squeeze(-1)
+            elif self.continuous_head == "gmm":
+                sampled_values = sample_gmm(var_pred, self.gmm_components)
+            elif self.continuous_head == "ddpm":
+                # The Transformer context is computed once for this column;
+                # only its small scalar denoiser runs at each reverse step.
+                sampled_values = self.prediction_heads[str(var_idx)].sample(var_pred)
             else:
                 # Continuous: sample from the predicted Gaussian
                 mu, log_sigma = var_pred.chunk(2, dim=-1)
@@ -142,4 +153,3 @@ class SamplingMixin:
                     )
 
         return final_samples_df
-

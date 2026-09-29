@@ -20,6 +20,10 @@ class CheckpointMixin:
                 "log_cols": self.log_cols,
                 "dropout": self.dropout,
                 "cont_scaler": self.cont_scaler,
+                "continuous_head": self.continuous_head,
+                "gmm_components": self.gmm_components,
+                "diffusion_steps": self.diffusion_steps,
+                "diffusion_hidden_dim": self.diffusion_hidden_dim,
                 "col_names": self.col_names,  # Save column names
             },
             "scalers": self.scalers,  # Save sklearn scalers (pickle)
@@ -47,6 +51,10 @@ class CheckpointMixin:
             cont_scaler=config["cont_scaler"],
             device=device,
             file_path=config["file_path"],
+            continuous_head=config.get("continuous_head", "gaussian"),
+            gmm_components=config.get("gmm_components", 5),
+            diffusion_steps=config.get("diffusion_steps", 100),
+            diffusion_hidden_dim=config.get("diffusion_hidden_dim"),
         )
 
         # Load weights
@@ -60,4 +68,3 @@ class CheckpointMixin:
         model.eval()
         print(f"Model loaded from {path}")
         return model
-
