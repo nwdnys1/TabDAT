@@ -7,8 +7,10 @@
 | 论文（原文） | 可借鉴的内容 | 对 TabDAT 的用途与边界 |
 | --- | --- | --- |
 | [PAFT：*Are LLMs Naturally Good at Synthetic Tabular Data Generation?*](https://arxiv.org/abs/2406.14541)（后续版本题为 *Why LLMs Are Bad at Synthetic Table Generation (and what to do about it)*） | 从表中发现功能依赖，再利用列排列辅助 LLM 微调；关注逻辑约束。 | 支持“顺序值得研究”的动机，启发约束违反率及排序对照。它依赖文本化表格与 LLM；既不能证明 TabDAT 的 W 学到真实依赖，也不能把其收益直接归因于我们的机制。作为不同模型家族的参考／必要时基线。 |
-| [MAC：*Training and Inference on Any-Order Autoregressive Models the Right Way*](https://proceedings.neurips.cc/paper_files/paper/2022/hash/123fd8a56501194823c8e0dca00733df-Abstract-Conference.html) | 根据查询与确定性的分解规则，减少冗余的单变量条件任务，并让训练任务分布贴近推理。 | 启发“先定义采样协议，再设计输入 mask、目标 mask 与任务权重”。仅固定前缀是其思想的一个受限特例；任意证据下按固定顺序补全也只是 MAC 风格协议，不等于复现其完整方法。需另证其对 TabDAT 有效。 |
+| [MAC：*Training and Inference on Any-Order Autoregressive Models the Right Way*](https://proceedings.neurips.cc/paper_files/paper/2022/hash/123fd8a56501194823c8e0dca00733df-Abstract-Conference.html) | 对任意子集的**边缘概率查询**，按规范顺序确定性地移除变量，将查询分解为较少的单变量条件项；按查询使用频率调整训练任务分布。 | 启发“训练任务应与实际推理查询匹配”这一研究视角。它不是“给定任意列后直接生成第一列未知变量”的算法；固定顺序 `prefix_next` 也不是 MAC 的特例实现。若只研究无条件合成，不必为了引用 MAC 新增条件补全策略。 |
 | [DEformer：*The DEformer: An Order-Agnostic Distribution Estimating Transformer*](https://arxiv.org/abs/2106.06989) | 显式表示特征身份和值，使同一模型能处理多种顺序与条件任务。 | 任意顺序能力的架构对照；检查 TabDAT 的列身份表达与顺序切换的训练覆盖。不能用它的结果推断“固定顺序更好”或“W 是依赖图”。 |
+
+MAC 的规范次序是全局列排列，不必是 DAG 的拓扑序。对子集 `E={A,C}`，若规范次序为 `A<B<C`，其分解可写为 `p(A,C)=p(A)p(C|A)`；全表 `E={A,B,C}` 则仍按 `A→B→C` 分解。这是“任意子集查询”，不等于整表的任意生成排列，也不直接训练 `p(A|C)` 这类以非前缀列为证据的前向补全条件项。完整 MAC 还要按目标查询的使用频率设计训练任务权重。
 
 ## 掩码训练与表格输出分布
 
@@ -29,7 +31,7 @@
 ## 从文献到可检验问题
 
 1. **顺序是否真的降低有限容量模型的拟合难度？** PAFT 给动机，MAC 给条件任务分配视角，DEformer 给任意顺序架构参照。TabDAT 仍需在相同预算下比较顺序、逐条件误差和联合合成质量；同时报告“同模型换采样顺序”与“各顺序分别匹配训练”，不能混成一个因果结论。
-2. **训练任务是否匹配采样协议？** 比较当前 `bernoulli_all`、均匀掩码数量的 `uniform_count_all`、无条件固定顺序的 `prefix_next`，以及任意已知列下的 `ordered_completion`。`prefix_next` 随机选一步，只用真实前缀预测这一列；`ordered_completion` 随机选已知列集合，按固定顺序预测第一列未知变量，推理再逐步补齐。后者借鉴 MAC“确定查询后规定唯一分解”的思想；单纯固定前缀自回归不能算 MAC 方法。两者训练时均不需要用生成值完整滚动后缀。输入 mask 定义可见上下文，目标 mask 指定本步预测列；掩码策略的收益可能来自训练／推理匹配或任务权重，而非顺序本身，须做交叉对照。
+2. **训练任务是否匹配采样协议？** 代码现有六种可选策略：`bernoulli_all`、`uniform_count_all`、`prefix_next`、`ordered_completion`、`canonical_subset`、`random_permutation_next`；实现不等于正式实验全部采用。前两者覆盖任意可见列集合；`prefix_next` 聚焦已定顺序的无条件生成路径；`random_permutation_next` 覆盖随机排列和步骤。给定部分列后按固定顺序跳过已知列属于尚未实现的条件采样规则，不依赖 `ordered_completion`；后者是条件填补路径的单目标训练对照。`canonical_subset` 只实现 MAC 启发的单条规范边采样，没有复现其查询频率权重或完整分解。仅前缀训练未必覆盖非前缀证据条件项。掩码收益与顺序收益须做交叉对照。
 3. **连续输出头是否限制了顺序效应？** 对照 Gaussian、GMM、条件 DDPM，并与 TabDAR／TabNAT 的任务及成本明确区分。DDPM 的噪声预测 MSE 不是与 Gaussian NLL 可直接数值比较的似然。
 4. **结论覆盖何种使用场景？** 无条件合成、给定部分列的条件合成／缺失列填补分别评估；逻辑约束违反率可借鉴 PAFT 的关注点，但不能代替统计质量或下游效用。
 

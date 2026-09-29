@@ -103,3 +103,95 @@ def compute_dp_epsilon(batch_size, train_dataset_size, dp_sigma, dp_steps):
     )
     epsilon, _, _ = get_privacy_spent(lmbds, rdp, target_delta=1e-5)
     return epsilon
+
+
+def fit_dp_legacy(
+    model,
+    data=None,
+    epochs=1000,
+    batch_size=1024,
+    lr=1e-3,
+    mask_prob=0.15,
+    test_split_ratio=0.2,
+    sample=None,
+    lr_decay_gamma=0.999,
+    dp_epsilon=1.0,
+    dp_sigma=1.02,
+    dp_clip=1.0,
+    dp_micro_batch_size=1,
+):
+    """Keep the old DP loop separate from ordinary training.
+
+    This is a compatibility extraction, not a privacy guarantee or audit.
+    """
+    if model.continuous_head != "gaussian":
+        raise NotImplementedError(
+            "Legacy DP training has not been audited for GMM or DDPM heads"
+        )
+    if data is None:
+        if model.data is not None:
+            data = model.data
+        else:
+            raise ValueError(
+                "Training data not found. Please provide data to the `fit` method or specify `file_path` during model initialization."
+            )
+
+    dataset_size = len(data)
+    test_size = int(test_split_ratio * dataset_size)
+    train_size = dataset_size - test_size
+    train_dataset, test_dataset = torch.utils.data.random_split(
+        data, [train_size, test_size]
+    )
+    device = model.device
+    model.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(
+        optimizer, gamma=lr_decay_gamma
+    )
+    dataloader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True
+    )
+    model.training_config = {
+        "mask_strategy": "bernoulli_all",
+        "mask_prob": mask_prob,
+        "training_order": None,
+        "dp": True,
+    }
+
+    print("--- Starting Training ---")
+    print(
+        f"DPSGD Enabled: Sigma={dp_sigma}, Clip={dp_clip}, MicroBatch={dp_micro_batch_size}"
+    )
+    print(f"Training set size: {len(train_dataset)}")
+    print(f"Test set size: {len(test_dataset)}")
+    dp_steps = 0
+
+    for epoch in range(epochs):
+        total_loss = 0
+        model.train()
+        for batch_data in dataloader:
+            batch_data = batch_data.to(device)
+            optimizer.zero_grad()
+            total_loss += dp_training_step(
+                model, batch_data, optimizer, mask_prob, dp_sigma, dp_clip,
+                dp_micro_batch_size, device,
+            )
+            dp_steps += 1
+
+        scheduler.step()
+        epsilon = compute_dp_epsilon(
+            batch_size, len(train_dataset), dp_sigma, dp_steps
+        )
+        print(f"Epoch {epoch+1}: ε = {epsilon:.4f} for δ = 1e-5")
+        if epsilon > dp_epsilon:
+            print(
+                f"Reached privacy budget of epsilon = {dp_epsilon}. Stopping training."
+            )
+            break
+        if (epoch + 1) % 10 == 0:
+            total_loss /= len(dataloader)
+            print(f"Epoch [{epoch+1}/{epochs}], Loss: {total_loss:.4f} ")
+        if sample and (epoch + 1) % sample == 0:
+            model.sample(model.data.shape[0], device=device)
+
+    print("--- Training Finished ---")

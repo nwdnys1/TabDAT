@@ -7,8 +7,10 @@ import torch.nn.functional as F
 from sklearn.preprocessing import LabelEncoder
 
 if __package__:
+    from .mask_strategies import validate_order
     from .output_heads import sample_gmm
 else:
+    from mask_strategies import validate_order
     from output_heads import sample_gmm
 
 
@@ -47,13 +49,15 @@ class SamplingMixin:
         return sampling_order
 
     @torch.no_grad()
-    def sample(self, n_samples, device="cuda"):
+    def sample(self, n_samples, device="cuda", order=None):
         """
         Generates synthetic data samples from the learned Bayesian network.
 
         Args:
             n_samples (int): The number of samples to generate.
             device (str): The device to perform computation on ('cpu' or 'cuda').
+            order (sequence[int], optional): A complete explicit generation
+                order. If absent, use the existing W-based order.
 
         Returns:
             pd.DataFrame: A DataFrame containing the generated data in its
@@ -62,8 +66,13 @@ class SamplingMixin:
         self.to(device)
         self.eval()
 
-        w = torch.sigmoid(self.W.data)
-        sampling_order = self._topological_sort(w)
+        if order is None:
+            w = torch.sigmoid(self.W.data)
+            sampling_order = self._topological_sort(w)
+        else:
+            sampling_order = validate_order(order, self.num_vars)
+            print(f"Sampling order: {sampling_order}")
+        self.last_sampling_order = sampling_order.copy()
 
         samples = torch.zeros(n_samples, self.num_vars, device=device)
         embeddings = self.mask_token.repeat(n_samples, self.num_vars, 1)

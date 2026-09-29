@@ -25,6 +25,8 @@ class CheckpointMixin:
                 "diffusion_steps": self.diffusion_steps,
                 "diffusion_hidden_dim": self.diffusion_hidden_dim,
                 "col_names": self.col_names,  # Save column names
+                "training_config": getattr(self, "training_config", None),
+                "last_sampling_order": getattr(self, "last_sampling_order", None),
             },
             "scalers": self.scalers,  # Save sklearn scalers (pickle)
         }
@@ -63,6 +65,8 @@ class CheckpointMixin:
         # Load scalers and column names
         model.scalers = checkpoint["scalers"]
         model.col_names = config["col_names"]
+        model.training_config = config.get("training_config")
+        model.last_sampling_order = config.get("last_sampling_order")
 
         model.to(device)
         model.eval()
